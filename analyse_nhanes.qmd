@@ -1,0 +1,223 @@
+---
+title: "Analyse des données NHANES"
+subtitle: "Étude de l'impact de l'âge et de l'IMC sur le diabète"
+author: "Lina BOUALLEGUE"
+date: today
+format:
+  html:
+    code-tools: true
+    code-fold: show
+    lang: fr
+    toc: true
+    toc-location: left
+    theme: cosmo
+    embed-resources: true
+    css: custom.css
+    number-sections: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup, include=FALSE}
+library(haven)
+library(dplyr)
+#library(janitor)
+library(ggplot2)
+library(knitr)
+library(forcats)
+
+# Chargement des données NHANES
+demo <- read_xpt("Data/DEMO_J.xpt")
+bmx  <- read_xpt("Data/BMX_J.xpt")  
+diq  <- read_xpt("Data/DIQ_J.xpt")  
+glu  <- read_xpt("Data/GLU_J.xpt")  
+
+# Fusion des tables par l'identifiant unique SEQN
+df <- demo %>%
+  left_join(bmx, by = "SEQN") %>%
+  left_join(diq, by = "SEQN") %>%
+  left_join(glu, by = "SEQN")
+
+# Nettoyage et transformation des variables
+df_clean <- df %>%
+
+  select(
+    SEQN,
+    age = RIDAGEYR,
+    sex = RIAGENDR,
+    bmi = BMXBMI,
+    diabetes = DIQ010,
+    glucose = LBXGLU
+  ) %>%
+  mutate(
+    # Recodage du diabète : 1 = Oui, 2 = Non, autres = NA
+    diabetes_bin = case_when(
+      diabetes == 1 ~ "Diabétique",
+      diabetes == 2 ~ "Non-diabétique",
+      TRUE ~ NA_character_
+    ),
+    # Recodage du genre
+    sex = case_when(
+      sex == 1 ~ "Masculin",
+      sex == 2 ~ "Féminin",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(diabetes_bin)) # On garde uniquement les cas avec réponse claire
+```
+
+# Introduction {#sec-intro}
+
+## Contexte de l'étude NHANES
+
+Le National Health and Nutrition Examination Survey (NHANES) est un programme d'études conçu pour évaluer l'état de santé et de nutrition des adultes et des enfants aux États-Unis. Cette enquête est unique car elle combine des entretiens et des examens physiques.
+
+## Objectifs de l'analyse
+
+Dans ce projet, nous explorons les liens entre plusieurs facteurs physiologiques et le diabète. Nos objectifs sont :
+
+- **Fusionner** les différents modules de l'enquête (démographie, mesures anthropométriques, questionnaires et biologie).
+- **Analyser** la distribution de l'Indice de Masse Corporelle (IMC) et de l'âge dans la population.
+- **Évaluer** l'association entre l'âge, l'obésité (via l'IMC) et la prévalence du diabète déclaré.
+
+# Inspection des données {#sec-inspection}
+
+## Structure du jeu de données final
+
+Après fusion des modules `DEMO_J`, `BMX_J`, `DIQ_J` et `GLU_J`, nous obtenons un jeu de données consolidé.
+
+```{r}
+#| label: data-structure
+str(df_clean)
+```
+
+## Aperçu des variables sélectionnées
+
+Nous nous concentrons sur les variables clés : l'identifiant (`SEQN`), l'âge, le sexe, l'IMC, le statut du diabète et la glycémie à jeun.
+
+```{r}
+#| label: data-head
+head(df_clean, 10) %>% kable()
+```
+
+# Analyses descriptives {#sec-descriptives}
+
+## Caractéristiques démographiques
+
+### Distribution de l'âge et du sexe
+
+Le tableau suivant présente la répartition par sexe dans notre échantillon nettoyé.
+
+```{r}
+#| label: sex-distribution
+df_clean %>%
+  count(sex) %>%
+  mutate(pourcentage = round(n / sum(n) * 100, 1)) %>%
+  kable(col.names = c("Sexe", "Effectif", "Pourcentage (%)"))
+```
+
+
+### Statistiques de l'âge
+
+```{r}
+#| label: age-stats
+age_stats <- data.frame(
+  Statistique = c("Minimum", "1er quartile", "Médiane", "Moyenne", "3e quartile", "Maximum"),
+  Valeur = round(as.numeric(summary(df_clean$age)), 1)
+)
+
+knitr::kable(age_stats, caption = "Résumé statistique de l'âge")
+
+
+```
+
+## Caractéristiques de santé (IMC et Diabète)
+
+### Prévalence du diabète déclaré
+
+```{r}
+#| label: diabetes-prev
+diabetes_stats <- df_clean %>%
+  count(diabetes_bin) %>%
+  mutate(pourcentage = round(n / sum(n) * 100, 1))
+
+diabetes_stats %>% kable(col.names = c("Statut Diabète", "Nombre", "Proportion (%)"))
+```
+
+**Analyse de la prévalence** : Environ `r diabetes_stats$pourcentage[diabetes_stats$diabetes_bin == "Diabétique"]`% de la population étudiée se déclare diabétique. Ce chiffre, bien que significatif, pourrait être une sous-estimation de la réalité biologique en raison de l'auto-déclaration (biais de rappel ou cas non diagnostiqués).
+
+# Visualisations et Analyses Croisées {#sec-visualisation}
+
+## Distribution de l'IMC selon le statut diabétique
+
+L'une des hypothèses classiques est que le diabète est fortement corrélé à un IMC élevé.
+
+```{r}
+#| label: fig-bmi-hist
+#| fig-cap: "Comparaison des distributions de l'IMC entre les individus diabétiques et non-diabétiques."
+#| fig-width: 10
+#| fig-height: 6
+
+ggplot(df_clean, aes(x = bmi, fill = diabetes_bin)) +
+  geom_histogram(alpha = 0.6, bins = 35, position = "identity", color = "white") +
+  scale_fill_manual(values = c("Diabétique" = "#e74c3c", "Non-diabétique" = "#4a90e2")) +
+  labs(
+    title = "Distribution de l'IMC par statut diabétique",
+    x = "Indice de Masse Corporelle (kg/m²)",
+    y = "Fréquence / Nombre de cas",
+    fill = "Statut"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "top")
+```
+
+**Interprétation biologique** : On observe visuellement que la distribution des individus diabétiques (en rouge) est nettement décalée vers les hautes valeurs d'IMC. Ce résultat corrobore la littérature médicale identifiant l'adiposité excessive comme un facteur majeur d'insulinorésistance, précurseur direct du diabète de type 2.
+
+## Âge et Diabète : Une progression évidente
+
+Est-ce que le diabète touche plus les personnes âgées dans cet échantillon ?
+
+```{r}
+#| label: fig-age-box
+#| fig-cap: "Boxplot de l'âge selon le statut diabétique."
+
+ggplot(df_clean, aes(x = diabetes_bin, y = age, fill = diabetes_bin)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    title = "Comparaison de l'âge moyen selon le diabète",
+    x = "Diabète déclaré",
+    y = "Âge (Années)"
+  ) +
+  theme_minimal() +
+  guides(fill = "none")
+```
+
+**Discussion sur l'âge** : L'âge médian des individus diabétiques est de `r median(df_clean$age[df_clean$diabetes_bin == "Diabétique"])` ans, contre `r median(df_clean$age[df_clean$diabetes_bin == "Non-diabétique"])` ans pour le groupe sain. Cette progression marquée suggère que le vieillissement physiologique, associé à l'usure des cellules bêta du pancréas, est un facteur de susceptibilité critique.
+
+# Conclusion {#sec-conclusion}
+
+## Synthèse des résultats
+
+L'analyse des données NHANES a permis de confirmer plusieurs tendances majeures :
+
+1.  **Lien Anthropométrique (IMC-Diabète)** : Les résultats confirment une forte association entre surcharge pondérale et dysfonctionnement métabolique. L'IMC moyen des diabétiques dépasse les seuils de normalité, soulignant le rôle de l'obésité dans l'étiologie de la maladie.
+2.  **Transition Épidémiologique et Âge** : La prévalence croissante avec l'âge suggère une influence cumulative des facteurs de risque au cours de la vie.
+3.  **Cohérence du modèle de données** : L'intégration réussie des modules NHANES permet une approche multifactorielle robuste.
+
+## Implications de santé publique
+
+Ces observations soulignent l'importance de la surveillance métabolique dès 45 ans, particulièrement chez les individus présentant un IMC supérieur à 25 kg/m². La prévention primaire via le contrôle du poids reste le levier le plus efficace.
+
+- **Auto-déclaration** : Le statut de diabète utilisé ici est basé sur une réponse à un questionnaire (`DIQ010`), ce qui peut sous-estimer la prévalence réelle (diabétiques non diagnostiqués).
+- **Glycémie biologique** : Une analyse future pourrait croiser ces résultats avec la variable `lbxglu` (glycémie à jeun) pour identifier les cas de pré-diabète ou de diabète non déclaré.
+- **Modélisation** : Un modèle de régression logistique pourrait être utilisé pour quantifier précisément le risque de diabète en fonction de l'unité d'IMC supplémentaire.
+
+---
+
+**Source des données** : NHANES 2017-2018 (Cycle J)
+**Rapport généré le** : `r format(Sys.Date(), "%d %B %Y")`
+
+---
