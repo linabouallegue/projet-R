@@ -28,6 +28,9 @@ library(ggplot2)
 library(knitr)
 library(forcats)
 
+# Augmenter le temps de téléchargement (évite les timeouts)
+options(timeout = 300)
+
 # Chargement des données NHANES
 demo <- read_xpt("Data/DEMO_J.xpt")
 bmx  <- read_xpt("Data/BMX_J.xpt")  
@@ -92,6 +95,7 @@ Dans ce projet, nous explorons les liens entre plusieurs facteurs physiologiques
 
 Après fusion des modules `DEMO_J`, `BMX_J`, `DIQ_J` et `GLU_J`, nous obtenons un jeu de données consolidé.
 
+```{r}
 str(df_clean)
 
 # Vérifier l'absence de doublons sur l'ID
@@ -118,6 +122,7 @@ head(df_clean, 10) %>% kable()
 
 Le tableau suivant présente la répartition par sexe dans notre échantillon nettoyé.
 
+```{r}
 df_clean %>%
   count(sex_label) %>%
   mutate(pourcentage = round(n / sum(n) * 100, 1)) %>%
@@ -143,6 +148,8 @@ knitr::kable(age_stats, caption = "Résumé statistique de l'âge")
 
 ### Prévalence du diabète déclaré
 
+```{r}
+#| label: diabetes-prevalence
 # Répartition du diabète (binaire)
 diabetes_stats <- df_clean %>%
   filter(!is.na(diabetes_bin)) %>%
@@ -215,57 +222,96 @@ ggplot(df_clean %>% filter(!is.na(diabetes_bin)), aes(x = factor(diabetes_bin), 
 
 **Discussion sur l'âge** : L'âge médian des individus diabétiques est de `r median(df_clean$age[df_clean$diabetes_bin == 1], na.rm = TRUE)` ans, contre `r median(df_clean$age[df_clean$diabetes_bin == 0], na.rm = TRUE)` ans pour le groupe sain. Cette progression marquée suggère que le vieillissement physiologique, associé à l'usure des cellules bêta du pancréas, est un facteur de susceptibilité critique.
 
-# Modélisation (Régression Logistique)
-Nous testons l'influence combinée de l'âge, de l'IMC et du sexe sur le risque de diabète.
+## Relation entre IMC et âge
+
+Il est aussi intéressant de voir si l'IMC et l'âge sont corrélés. Un nuage de points avec une ligne de tendance peut nous aider à visualiser cette relation.
 
 ```{r}
-#| label: modeling
-#| warning: false
+#| label: fig-age-bmi-scatter
+#| fig-cap: "Nuage de points entre IMC et âge avec une ligne de tendance."
 
-df_model <- df_clean %>%
-  mutate(
-    sex = factor(sex, levels = c("Female", "Male"))
-  ) %>%
-  filter(
-    !is.na(age),
-    !is.na(bmi),
-    !is.na(diabetes_bin)
-  )
-
-modele <- glm(
-  diabetes_bin ~ age + bmi + sex,
-  data = df_model,
-  family = binomial(link = "logit")
-)
-
-summary(modele)
-
-# Critère AIC
-cat("AIC du modèle :", AIC(modele), "\n\n")
-
-# Odds Ratios et Intervalles de Confiance
-OR <- exp(coef(modele))
-IC <- exp(confint(modele))
-
-resultats_model <- data.frame(
-  Variable = names(OR),
-  OR = round(OR, 2),
-  IC_inf = round(IC[,1], 2),
-  IC_sup = round(IC[,2], 2)
-)
-
-kable(resultats_model, caption = "Odds Ratios ajustés (IC 95 %)")
+# Nuage de points entre IMC et âge avec une ligne de tendance
+ggplot(df_clean, aes(x = age, y = bmi)) +
+  geom_point(alpha = 0.6, color = "#3498db") +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  labs(
+    title = "Relation entre l'IMC et l'âge",
+    x = "Âge (Années)",
+    y = "Indice de Masse Corporelle (kg/m²)"
+  ) +
+  theme_minimal(base_size = 14)
 ```
+
+**Nuage de points** : Le nuage de points avec une ligne de régression montre une relation positive entre l'âge et l'IMC. Autrement dit, à mesure que l'on vieillit, l'IMC tend à augmenter, ce qui est attendu puisque le métabolisme ralentit avec l'âge, entraînant souvent une prise de poids.
+
+## Répartition par sexe selon le statut diabétique
+
+Pour mieux comprendre la distribution du sexe entre les groupes diabétiques et non-diabétiques, nous allons utiliser un diagramme à barres.
+
+```{r}
+#| label: fig-sex-bar
+#| fig-cap: "Répartition du sexe selon le statut diabétique."
+
+# Diagramme à barres du sexe selon le statut diabétique
+ggplot(df_clean %>% filter(!is.na(diabetes_bin)), aes(x = sex, fill = factor(diabetes_bin))) +
+  geom_bar(position = "fill", alpha = 0.6) +
+  scale_fill_manual(
+    values = c("1" = "#e74c3c", "0" = "#4a90e2"),
+    labels = c("1" = "Diabétique", "0" = "Non-diabétique")
+  ) +
+  labs(
+    title = "Répartition du sexe selon le statut diabétique",
+    x = "Sexe",
+    y = "Proportion",
+    fill = "Statut"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "top")
+```
+
+**Diagramme à barres** : Le graphique montre la répartition des sexes parmi les diabétiques et non-diabétiques. On peut observer que les hommes ont une proportion plus élevée de diabète par rapport aux femmes dans cet échantillon, ce qui est cohérent avec les études épidémiologiques indiquant un risque accru de diabète chez les hommes.
+
+## Proportions par tranche d'âge
+
+Une autre façon d'analyser les données est de diviser la population en tranches d'âge et de calculer la proportion de diabétiques et non diabétiques dans chaque tranche. Cela peut être réalisé par un graphique à barres empilées.
+
+```{r}
+#| label: fig-age-group-bar
+#| fig-cap: "Proportions de diabétiques et non diabétiques par tranche d'âge."
+
+# Création des tranches d'âge
+df_clean$age_group <- cut(df_clean$age, breaks = c(20, 30, 40, 50, 60, 70, 80, 90, 100), 
+                          labels = c("20-29", "30-39", "40-49", "50-59", "60-69", "70-79", "80-89", "90+"))
+
+# Diagramme à barres empilées
+ggplot(df_clean %>% filter(!is.na(diabetes_bin)), aes(x = age_group, fill = factor(diabetes_bin))) +
+  geom_bar(position = "fill", alpha = 0.7) +
+  scale_fill_manual(
+    values = c("1" = "#e74c3c", "0" = "#4a90e2"),
+    labels = c("1" = "Diabétique", "0" = "Non-diabétique")
+  ) +
+  labs(
+    title = "Proportions de diabétiques et non diabétiques par tranche d'âge",
+    x = "Tranche d'âge",
+    y = "Proportion",
+    fill = "Statut"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "top")
+```
+
+**Graphique à barres empilées** : Ce graphique nous montre comment le diabète est réparti par tranche d'âge. On peut voir que la proportion de diabétiques augmente dans les tranches d'âge plus âgées, ce qui est une tendance bien connue dans les études épidémiologiques.
 
 # Conclusion {#sec-conclusion}
 
 ## Synthèse des résultats
 
-L'analyse des données NHANES a permis de confirmer plusieurs tendances majeures :
+Ces visualisations renforcent les conclusions générales de l'analyse des données :
 
-1.  **Lien Anthropométrique (IMC-Diabète)** : Les résultats confirment une forte association entre surcharge pondérale et dysfonctionnement métabolique. L'IMC moyen des diabétiques dépasse les seuils de normalité, soulignant le rôle de l'obésité dans l'étiologie de la maladie.
-2.  **Transition Épidémiologique et Âge** : La prévalence croissante avec l'âge suggère une influence cumulative des facteurs de risque au cours de la vie.
-3.  **Cohérence du modèle de données** : L'intégration réussie des modules NHANES permet une approche multifactorielle robuste.
+- **IMC et diabète** : Les individus diabétiques ont en moyenne un IMC plus élevé que les non-diabétiques.
+- **Âge et diabète** : L'incidence du diabète augmente avec l'âge, ce qui souligne l'importance de surveiller la santé métabolique avec l'âge.
+- **Sexe et diabète** : Les hommes ont un risque plus élevé de diabète dans cet échantillon.
+- **Tranches d'âge** : Les diabétiques sont plus nombreux dans les tranches d'âge plus avancées, ce qui est cohérent avec la notion que le diabète de type 2 est une maladie liée à l'âge et aux facteurs de risque cumulatifs.
 
 ## Implications de santé publique
 
@@ -273,7 +319,7 @@ Ces observations soulignent l'importance de la surveillance métabolique dès 45
 
 - **Auto-déclaration** : Le statut de diabète utilisé ici est basé sur une réponse à un questionnaire (`DIQ010`), ce qui peut sous-estimer la prévalence réelle (diabétiques non diagnostiqués).
 - **Glycémie biologique** : Une analyse future pourrait croiser ces résultats avec la variable `lbxglu` (glycémie à jeun) pour identifier les cas de pré-diabète ou de diabète non déclaré.
-- **Modélisation** : Un modèle de régression logistique pourrait être utilisé pour quantifier précisément le risque de diabète en fonction de l'unité d'IMC supplémentaire.
+
 
 ---
 
