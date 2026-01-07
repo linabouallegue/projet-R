@@ -42,7 +42,6 @@ df <- demo %>%
 
 # Nettoyage et transformation des variables
 df_clean <- df %>%
-
   select(
     SEQN,
     age = RIDAGEYR,
@@ -52,20 +51,25 @@ df_clean <- df %>%
     glucose = LBXGLU
   ) %>%
   mutate(
-    # Recodage du diabète : 1 = Oui, 2 = Non, autres = NA
+    # Recodage du diabète : 1 = Oui (Diabétique), 0 = Non (Sain)
     diabetes_bin = case_when(
-      diabetes == 1 ~ "Diabétique",
-      diabetes == 2 ~ "Non-diabétique",
-      TRUE ~ NA_character_
+      diabetes == 1 ~ 1,
+      diabetes == 2 ~ 0,
+      TRUE ~ NA_real_
     ),
     # Recodage du genre
-    sex = case_when(
+    sex_label = case_when(
       sex == 1 ~ "Masculin",
       sex == 2 ~ "Féminin",
       TRUE ~ NA_character_
+    ),
+    # Sexe pour le modèle (Label anglais pour cohérence avec le notebook)
+    sex = case_when(
+      sex == 1 ~ "Male",
+      sex == 2 ~ "Female",
+      TRUE ~ NA_character_
     )
-  ) %>%
-  filter(!is.na(diabetes_bin)) # On garde uniquement les cas avec réponse claire
+  )
 ```
 
 # Introduction {#sec-intro}
@@ -88,9 +92,13 @@ Dans ce projet, nous explorons les liens entre plusieurs facteurs physiologiques
 
 Après fusion des modules `DEMO_J`, `BMX_J`, `DIQ_J` et `GLU_J`, nous obtenons un jeu de données consolidé.
 
-```{r}
-#| label: data-structure
 str(df_clean)
+
+# Vérifier l'absence de doublons sur l'ID
+anyDuplicated(df_clean$SEQN)
+
+# Aperçu des valeurs manquantes par variable
+colSums(is.na(df_clean))
 ```
 
 ## Aperçu des variables sélectionnées
@@ -110,10 +118,8 @@ head(df_clean, 10) %>% kable()
 
 Le tableau suivant présente la répartition par sexe dans notre échantillon nettoyé.
 
-```{r}
-#| label: sex-distribution
 df_clean %>%
-  count(sex) %>%
+  count(sex_label) %>%
   mutate(pourcentage = round(n / sum(n) * 100, 1)) %>%
   kable(col.names = c("Sexe", "Effectif", "Pourcentage (%)"))
 ```
@@ -137,16 +143,21 @@ knitr::kable(age_stats, caption = "Résumé statistique de l'âge")
 
 ### Prévalence du diabète déclaré
 
-```{r}
-#| label: diabetes-prev
+# Répartition du diabète (binaire)
 diabetes_stats <- df_clean %>%
-  count(diabetes_bin) %>%
-  mutate(pourcentage = round(n / sum(n) * 100, 1))
+  filter(!is.na(diabetes_bin)) %>%
+  group_by(diabetes_bin) %>%
+  summarise(n = n()) %>%
+  mutate(
+    Label = ifelse(diabetes_bin == 1, "Diabétique", "Non-diabétique"),
+    pourcentage = round(n / sum(n) * 100, 1)
+  ) %>%
+  select(Label, n, pourcentage)
 
 diabetes_stats %>% kable(col.names = c("Statut Diabète", "Nombre", "Proportion (%)"))
 ```
 
-**Analyse de la prévalence** : Environ `r diabetes_stats$pourcentage[diabetes_stats$diabetes_bin == "Diabétique"]`% de la population étudiée se déclare diabétique. Ce chiffre, bien que significatif, pourrait être une sous-estimation de la réalité biologique en raison de l'auto-déclaration (biais de rappel ou cas non diagnostiqués).
+**Analyse de la prévalence** : Environ `r diabetes_stats$pourcentage[diabetes_stats$Label == "Diabétique"]`% de la population étudiée se déclare diabétique. Ce chiffre, bien que significatif, pourrait être une sous-estimation de la réalité biologique en raison de l'auto-déclaration (biais de rappel ou cas non diagnostiqués).
 
 # Visualisations et Analyses Croisées {#sec-visualisation}
 
@@ -160,9 +171,12 @@ L'une des hypothèses classiques est que le diabète est fortement corrélé à 
 #| fig-width: 10
 #| fig-height: 6
 
-ggplot(df_clean, aes(x = bmi, fill = diabetes_bin)) +
+ggplot(df_clean %>% filter(!is.na(diabetes_bin)), aes(x = bmi, fill = factor(diabetes_bin))) +
   geom_histogram(alpha = 0.6, bins = 35, position = "identity", color = "white") +
-  scale_fill_manual(values = c("Diabétique" = "#e74c3c", "Non-diabétique" = "#4a90e2")) +
+  scale_fill_manual(
+    values = c("1" = "#e74c3c", "0" = "#4a90e2"),
+    labels = c("1" = "Diabétique", "0" = "Non-diabétique")
+  ) +
   labs(
     title = "Distribution de l'IMC par statut diabétique",
     x = "Indice de Masse Corporelle (kg/m²)",
@@ -183,9 +197,13 @@ Est-ce que le diabète touche plus les personnes âgées dans cet échantillon ?
 #| label: fig-age-box
 #| fig-cap: "Boxplot de l'âge selon le statut diabétique."
 
-ggplot(df_clean, aes(x = diabetes_bin, y = age, fill = diabetes_bin)) +
+ggplot(df_clean %>% filter(!is.na(diabetes_bin)), aes(x = factor(diabetes_bin), y = age, fill = factor(diabetes_bin))) +
   geom_boxplot(alpha = 0.7) +
-  scale_fill_brewer(palette = "Set1") +
+  scale_fill_manual(
+    values = c("1" = "#e74c3c", "0" = "#4a90e2"),
+    labels = c("1" = "Diabétique", "0" = "Non-diabétique")
+  ) +
+  scale_x_discrete(labels = c("0" = "Non-diabétique", "1" = "Diabétique")) +
   labs(
     title = "Comparaison de l'âge moyen selon le diabète",
     x = "Diabète déclaré",
@@ -195,7 +213,49 @@ ggplot(df_clean, aes(x = diabetes_bin, y = age, fill = diabetes_bin)) +
   guides(fill = "none")
 ```
 
-**Discussion sur l'âge** : L'âge médian des individus diabétiques est de `r median(df_clean$age[df_clean$diabetes_bin == "Diabétique"])` ans, contre `r median(df_clean$age[df_clean$diabetes_bin == "Non-diabétique"])` ans pour le groupe sain. Cette progression marquée suggère que le vieillissement physiologique, associé à l'usure des cellules bêta du pancréas, est un facteur de susceptibilité critique.
+**Discussion sur l'âge** : L'âge médian des individus diabétiques est de `r median(df_clean$age[df_clean$diabetes_bin == 1], na.rm = TRUE)` ans, contre `r median(df_clean$age[df_clean$diabetes_bin == 0], na.rm = TRUE)` ans pour le groupe sain. Cette progression marquée suggère que le vieillissement physiologique, associé à l'usure des cellules bêta du pancréas, est un facteur de susceptibilité critique.
+
+# Modélisation (Régression Logistique)
+Nous testons l'influence combinée de l'âge, de l'IMC et du sexe sur le risque de diabète.
+
+```{r}
+#| label: modeling
+#| warning: false
+
+df_model <- df_clean %>%
+  mutate(
+    sex = factor(sex, levels = c("Female", "Male"))
+  ) %>%
+  filter(
+    !is.na(age),
+    !is.na(bmi),
+    !is.na(diabetes_bin)
+  )
+
+modele <- glm(
+  diabetes_bin ~ age + bmi + sex,
+  data = df_model,
+  family = binomial(link = "logit")
+)
+
+summary(modele)
+
+# Critère AIC
+cat("AIC du modèle :", AIC(modele), "\n\n")
+
+# Odds Ratios et Intervalles de Confiance
+OR <- exp(coef(modele))
+IC <- exp(confint(modele))
+
+resultats_model <- data.frame(
+  Variable = names(OR),
+  OR = round(OR, 2),
+  IC_inf = round(IC[,1], 2),
+  IC_sup = round(IC[,2], 2)
+)
+
+kable(resultats_model, caption = "Odds Ratios ajustés (IC 95 %)")
+```
 
 # Conclusion {#sec-conclusion}
 
